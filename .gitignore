@@ -1,0 +1,7 @@
+bin/
+*.tmp
+
+# Local agent/tooling state, not part of the project
+.omc/
+.claude/
+.DS_Store
