@@ -8,10 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +73,13 @@ func Detect() (*Target, error) {
 		ConfigPath: filepath.Join(configDir, ".claude.json"),
 		CredsPath:  filepath.Join(configDir, ".credentials.json"),
 	}, nil
+}
+
+// ProjectsDir is where Claude Code keeps its session transcripts, one
+// directory per project. It sits beside the credentials file in both the
+// default layout and a CLAUDE_CONFIG_DIR one.
+func (t *Target) ProjectsDir() string {
+	return filepath.Join(filepath.Dir(t.CredsPath), "projects")
 }
 
 // ReadCred loads the credential Claude Code is currently using.
@@ -281,29 +286,4 @@ func AccountUUID(raw json.RawMessage) string {
 	}
 	_ = json.Unmarshal(raw, &a)
 	return a.AccountUUID
-}
-
-// RunningClaudePIDs lists the pids of Claude Code processes owned by this user.
-// A switch does not reach them: Claude Code caches the credential in memory.
-func RunningClaudePIDs() []int {
-	out, err := exec.Command("/bin/ps", "-x", "-o", "pid=,comm=").Output()
-	if err != nil {
-		return nil
-	}
-	var pids []int
-	self := os.Getpid()
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil || pid == self {
-			continue
-		}
-		if filepath.Base(fields[1]) == "claude" {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
 }

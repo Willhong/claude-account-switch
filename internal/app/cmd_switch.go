@@ -81,10 +81,14 @@ func (a *App) activate(ctx context.Context, slot *store.Slot) error {
 	}
 
 	a.State.ActiveSlot = slot.N
+	a.State.SwitchedAt = time.Now()
 	ui.OKf("Switched to slot %d — %s", slot.N, ui.Bold(slot.Email))
 
-	if pids := target.RunningClaudePIDs(); len(pids) > 0 {
-		ui.Warnf("%d Claude Code session(s) are running and hold the previous credential in memory; restart them to pick this up.", len(pids))
+	// Sessions that were already running kept the outgoing account in memory,
+	// and will write it back over this one the next time they refresh a token.
+	if stale := a.staleSessions(); len(stale) > 0 {
+		ui.Warnf("%d Claude Code session(s) are still running on the previous account; their next token refresh can undo this switch.", len(stale))
+		ui.Warnf("run `cas sessions` to see them, or `cas reap` to close the ones nobody is using.")
 	}
 	return nil
 }

@@ -176,6 +176,7 @@ func (a *App) SyncActive() bool {
 	// ran `claude /login` directly, or a stale session wrote its own token back.
 	if s := a.State.FindByAccountUUID(owner); s != nil {
 		a.State.ActiveSlot = s.N
+		a.State.SwitchedAt = time.Now()
 		a.adoptLiveInto(s, live, rawAccount)
 		return true
 	}

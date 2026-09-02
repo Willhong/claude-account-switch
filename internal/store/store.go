@@ -91,9 +91,10 @@ func (s *Slot) ApplyCred(c *claudeauth.Cred) {
 
 // State is the whole slot table.
 type State struct {
-	Version    int     `json:"version"`
-	ActiveSlot int     `json:"activeSlot,omitempty"`
-	Slots      []*Slot `json:"slots"`
+	Version    int       `json:"version"`
+	ActiveSlot int       `json:"activeSlot,omitempty"`
+	SwitchedAt time.Time `json:"switchedAt,omitzero"`
+	Slots      []*Slot   `json:"slots"`
 }
 
 // Find returns the slot with the given number.

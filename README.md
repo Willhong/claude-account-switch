@@ -55,6 +55,8 @@ cas daemon install      # keep every account's token refreshed in the background
 | `cas limit` | how much of each account's 5-hour, weekly and per-model quota is spent |
 | `cas refresh` | rotate access tokens that are close to expiry |
 | `cas clean` | remove accounts whose credentials cannot be revived |
+| `cas sessions` | the running Claude Code sessions, how idle they are, and which account each holds |
+| `cas reap` | close the idle sessions that keep cycling the credential in the background |
 | `cas remove <n>` | forget a slot without touching the account |
 | `cas label <n> <name>` | give a slot a short name |
 | `cas daemon …` | `install`, `uninstall`, `status`, `log`, `run` |
@@ -128,6 +130,56 @@ Anthropic's `/api/oauth/validate` endpoint (which does not rotate anything)
 before touching any slot, and re-points the active marker instead of corrupting
 one.
 
+### Sessions that fight over the credential
+
+A running Claude Code session reads the credential once, at startup, and then
+keeps it alive itself: when its access token nears expiry it spends the refresh
+token and writes the rotated pair back over the Keychain item. That is fine for
+the session you are working in. It is not fine for one you left open in a
+terminal tab yesterday — that session still holds whichever account was active
+when it started, so its next refresh quietly reinstalls that account, and the
+refresh token cas holds for it is invalidated in the same breath. The symptom
+is auth breaking for no visible reason some time after a switch.
+
+`cas sessions` finds them:
+
+```
+$ cas sessions
+PID    TTY      IDLE  UPTIME  CREDENTIAL  DIRECTORY
+67268  ttys004  46m   1d      stale       ~/workspace/api
+5180   ttys007  14m   45m     current     ~/work/site
+88905  ttys003  0s    8m      current     ~/workspace/cas       this session
+
+cas switched to slot 2 (me@personal.com) 20m ago.
+warning: 1 session(s) started before the last switch: each still holds the
+previous account and can reinstall it on its next token refresh.
+```
+
+`IDLE` is how long the session has gone without activity, measured the way `w`
+measures it: the mtime of its terminal, which moves on both keystrokes and
+output. A session with no terminal — an SDK or subagent run — has no such
+signal, so cas falls back to the mtime of the transcripts under its working
+directory, and shows `?` when even that is unavailable. `CREDENTIAL` is `stale`
+when the process started before the last account switch.
+
+`cas reap` closes them. By default it takes the sessions idle for two hours or
+more (`--idle`, `CAS_REAP_IDLE`), asks for confirmation, and sends `SIGTERM` so
+Claude Code can save its transcript on the way out:
+
+```sh
+cas reap                      # everything idle for 2h+
+cas reap --idle 30m           # a tighter window
+cas reap --stale              # only the ones holding the previous account
+cas reap --stale --idle 0     # …however recently they were used
+cas reap --pid 67268          # one specific session
+cas reap --dry-run            # show the selection and stop
+cas reap --force              # SIGKILL instead of SIGTERM
+```
+
+Two sessions are never candidates, with or without `--all`: the one cas is
+running inside (found by walking cas's own parent chain, so `cas reap` is safe
+to run from inside Claude Code) and any session sharing this terminal.
+
 ### `cas clean`
 
 A slot is removed only when its credential is genuinely unrecoverable: the
@@ -140,7 +192,8 @@ and an unreachable API is never treated as proof that an account is dead.
 
 - **Running sessions do not notice a switch.** Claude Code caches the credential
   in memory at startup, so restart any open session after switching. `cas switch`
-  says how many are running.
+  says how many are still on the previous account; `cas sessions` names them and
+  `cas reap` closes the ones nobody is using.
 - **`cas login` speaks the OAuth flow directly**, using the same public client id
   and endpoints Claude Code itself uses, so it never disturbs the account you are
   currently signed in as. If the browser round-trip is blocked, `cas login
@@ -155,6 +208,7 @@ and an unreachable API is never treated as proof that an account is dead.
 | --- | --- |
 | `CAS_HOME` | where cas keeps its state (default `~/.cas`) |
 | `CAS_REFRESH_THRESHOLD` | how close to expiry a token is refreshed (default `45m`) |
+| `CAS_REAP_IDLE` | how long untouched a session must be for `cas reap` (default `2h`) |
 | `CAS_KEYCHAIN_SERVICE` | the Claude Code Keychain item to target |
 | `CAS_KEYCHAIN_ACCOUNT` | the Keychain account name (default: your macOS username) |
 | `CLAUDE_CONFIG_DIR` | honoured exactly as Claude Code honours it |
@@ -173,8 +227,9 @@ make build     # ./bin/cas
 
 The tests cover the parts that would be expensive to get wrong: the surgical
 `~/.claude.json` patch, credential round-tripping (including fields a future
-Claude Code might add), slot numbering, and the OAuth request shapes. Nothing in
-the test suite touches your real Keychain or makes a network call.
+Claude Code might add), slot numbering, the OAuth request shapes, and the
+process-table parsing and self-detection behind `cas reap`. Nothing in the test
+suite touches your real Keychain, makes a network call, or signals a process.
 
 ## Licence
 

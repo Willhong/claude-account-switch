@@ -114,9 +114,31 @@ func CmdDoctor([]string) error {
 		return err
 	}
 
-	if pids := target.RunningClaudePIDs(); len(pids) > 0 {
+	fmt.Println("\n" + ui.Bold("Running sessions"))
+	live, lerr := a.sessions()
+	switch {
+	case lerr != nil:
+		fmt.Printf("  %s %v\n", ui.Yellow("could not list Claude Code processes:"), lerr)
+	case len(live) == 0:
+		fmt.Printf("  %s\n", ui.Dim("none"))
+	default:
+		idle := ReapIdle()
+		fmt.Printf("  running             %d\n", len(live))
+		// Reuse the table so colour escapes do not throw the columns off.
+		t := &ui.Table{}
+		for _, s := range live {
+			t.Rows = append(t.Rows, []string{
+				fmt.Sprintf("    pid %d", s.PID),
+				s.TTYName(),
+				"idle " + idleCell(s, idle),
+				"up " + ui.Duration(s.Uptime),
+				credentialCell(s),
+				ui.Dim(note(s)),
+			})
+		}
+		t.Render(os.Stdout)
 		fmt.Println()
-		ui.Infof("%d Claude Code session(s) running (pids %v) — they cache the credential in memory.", len(pids), pids)
+		summarise(live, idle)
 	}
 	return nil
 }

@@ -5,6 +5,8 @@
 //	cas switch <n>       make one of them the account Claude Code uses
 //	cas clean            drop accounts whose credentials cannot be revived
 //	cas refresh          rotate every account's access token
+//	cas sessions         list the running Claude Code sessions
+//	cas reap             close the idle ones that keep cycling the credential
 package main
 
 import (
@@ -35,6 +37,8 @@ var commands = []command{
 	{"clean", nil, "remove accounts whose credentials have expired for good", app.CmdClean},
 	{"remove", []string{"rm", "forget"}, "forget a slot without touching the account", app.CmdRemove},
 	{"label", []string{"rename"}, "give a slot a short name", app.CmdLabel},
+	{"sessions", []string{"ps"}, "list the running Claude Code sessions and how idle they are", app.CmdSessions},
+	{"reap", []string{"kill"}, "close idle sessions that keep cycling the credential", app.CmdReap},
 	{"daemon", nil, "manage the background refresh agent", app.CmdDaemon},
 	{"doctor", nil, "report where cas reads and writes, and what looks wrong", app.CmdDoctor},
 	{"version", nil, "print the cas version", app.CmdVersion},
@@ -118,12 +122,15 @@ Getting started:
   cas limit              see how much of each account's quota is spent
   cas switch 2           hand the second one to Claude Code
   cas daemon install     keep every account's token alive in the background
+  cas sessions           see which Claude Code sessions are still running
+  cas reap               close the idle ones before they undo a switch
 
 Run `+"`cas <command> -h`"+` for a command's flags.
 
 Environment:
   CAS_HOME               where cas keeps its state (default ~/.cas)
   CAS_REFRESH_THRESHOLD  how close to expiry a token is refreshed (default 45m)
+  CAS_REAP_IDLE          how long untouched a session must be to be reaped (default 2h)
   CAS_KEYCHAIN_SERVICE   the Claude Code keychain item to target
   CLAUDE_CONFIG_DIR      honoured exactly as Claude Code honours it
 `)
