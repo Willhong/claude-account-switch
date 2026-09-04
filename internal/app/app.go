@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,13 +229,14 @@ func (a *App) adoptLiveInto(s *store.Slot, live *claudeauth.Envelope, rawAccount
 
 // refreshOutcome is one slot's result from a refresh pass.
 type refreshOutcome struct {
-	Slot    *store.Slot
-	Env     *claudeauth.Envelope
-	Profile *claudeauth.Profile
-	Roles   *claudeauth.Roles
-	Err     error
-	Revoked bool
-	Skipped bool
+	Slot      *store.Slot
+	Env       *claudeauth.Envelope
+	Profile   *claudeauth.Profile
+	Roles     *claudeauth.Roles
+	Err       error
+	Revoked   bool
+	Skipped   bool
+	Recovered bool
 }
 
 // RefreshOptions tunes a refresh pass.
@@ -278,6 +280,13 @@ func (a *App) Refresh(ctx context.Context, slots []*store.Slot, opts RefreshOpti
 			defer wg.Done()
 			res, err := a.OAuth.Refresh(ctx, env.OAuth)
 			if err != nil {
+				if errors.Is(err, claudeauth.ErrInvalidGrant) {
+					if recovered := a.recoverLiveCredential(ctx, s, env.OAuth.RefreshToken); recovered != nil {
+						outcomes[i].Env = recovered
+						outcomes[i].Recovered = true
+						return
+					}
+				}
 				outcomes[i].Err = err
 				outcomes[i].Revoked = errors.Is(err, claudeauth.ErrInvalidGrant)
 				return
@@ -329,7 +338,9 @@ func (a *App) Refresh(ctx context.Context, slots []*store.Slot, opts RefreshOpti
 				continue
 			}
 			s.ApplyCred(o.Env.OAuth)
-			s.LastRefreshedAt = time.Now()
+			if !o.Recovered {
+				s.LastRefreshedAt = time.Now()
+			}
 			s.Revoked = false
 			s.LastError = ""
 
@@ -342,6 +353,31 @@ func (a *App) Refresh(ctx context.Context, slots []*store.Slot, opts RefreshOpti
 		}
 	}
 	return outcomes
+}
+
+// recoverLiveCredential looks for a different credential written by Claude
+// Code after cas's refresh token became stale. A candidate is accepted only
+// when Anthropic says its access token is live and belongs to the same account.
+func (a *App) recoverLiveCredential(ctx context.Context, s *store.Slot, rejectedRefreshToken string) *claudeauth.Envelope {
+	candidates := a.Target.ReadCredCandidates()
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Env.OAuth.ExpiresAt > candidates[j].Env.OAuth.ExpiresAt
+	})
+	for _, candidate := range candidates {
+		cred := candidate.Env.OAuth
+		if cred.RefreshToken == "" || cred.RefreshToken == rejectedRefreshToken || cred.AccessExpired(0) {
+			continue
+		}
+		validation, err := a.OAuth.Validate(ctx, cred.AccessToken)
+		if err != nil || validation == nil || !validation.Valid {
+			continue
+		}
+		if s.AccountUUID == "" || validation.AccountUUID != s.AccountUUID {
+			continue
+		}
+		return candidate.Env.Clone()
+	}
+	return nil
 }
 
 // applyProfile folds a freshly fetched profile into a slot and its credential.
@@ -423,6 +459,15 @@ func (a *App) EnsureFresh(ctx context.Context, s *store.Slot) (*claudeauth.Envel
 	res, err := a.OAuth.Refresh(ctx, env.OAuth)
 	if err != nil {
 		if errors.Is(err, claudeauth.ErrInvalidGrant) {
+			if recovered := a.recoverLiveCredential(ctx, s, env.OAuth.RefreshToken); recovered != nil {
+				if err := a.Store.WriteCred(s.N, s.Label, recovered); err != nil {
+					return nil, err
+				}
+				s.ApplyCred(recovered.OAuth)
+				s.Revoked = false
+				s.LastError = ""
+				return recovered, nil
+			}
 			s.Revoked = true
 			s.LastError = err.Error()
 			return nil, fmt.Errorf("slot %d (%s) was rejected by Anthropic — run `cas login` to sign in again", s.N, s.Name())

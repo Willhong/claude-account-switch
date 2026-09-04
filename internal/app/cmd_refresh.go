@@ -71,6 +71,11 @@ func CmdRefresh(args []string) error {
 				fmt.Printf("  %s slot %d  %-32s %s\n", ui.Dim("·"), o.Slot.N, o.Slot.Email,
 					ui.Dim("still fresh, "+ui.RelativeTime(o.Slot.AccessExpiresAt())))
 			}
+		case o.Recovered:
+			if !*quiet {
+				fmt.Printf("  %s slot %d  %-32s %s\n", ui.Green("✓"), o.Slot.N, o.Slot.Email,
+					"recovered from Claude Code, "+ui.RelativeTime(o.Slot.AccessExpiresAt()))
+			}
 		default:
 			if !*quiet {
 				fmt.Printf("  %s slot %d  %-32s %s\n", ui.Green("✓"), o.Slot.N, o.Slot.Email,

@@ -82,22 +82,69 @@ func (t *Target) ProjectsDir() string {
 	return filepath.Join(filepath.Dir(t.CredsPath), "projects")
 }
 
-// ReadCred loads the credential Claude Code is currently using.
+// CredentialCandidate is one place where Claude Code may have persisted a
+// credential. Keychain and the fallback file can diverge when an already
+// running session refreshes through a different storage backend.
+type CredentialCandidate struct {
+	Env    *claudeauth.Envelope
+	Source string
+}
+
+// ReadCred loads the credential Claude Code is currently using. Keychain is
+// preferred, but an empty or malformed Keychain value must not hide a valid
+// fallback file.
 func (t *Target) ReadCred() (*claudeauth.Envelope, error) {
-	raw, err := keychain.Get(t.Service, t.Account)
-	if err == nil {
-		return claudeauth.ParseEnvelope(raw)
+	raw, keyErr := keychain.Get(t.Service, t.Account)
+	if keyErr == nil {
+		env, parseErr := claudeauth.ParseEnvelope(raw)
+		if parseErr == nil {
+			return env, nil
+		}
+		if env, fileErr := readCredFile(t.CredsPath); fileErr == nil {
+			return env, nil
+		}
+		return nil, parseErr
 	}
-	if !errors.Is(err, keychain.ErrNotFound) {
-		return nil, err
+	if !errors.Is(keyErr, keychain.ErrNotFound) {
+		return nil, keyErr
 	}
-	// Fall back to the plaintext file Claude Code uses when the keychain is
-	// unavailable (and on non-macOS installs).
-	b, ferr := os.ReadFile(t.CredsPath)
-	if ferr == nil {
-		return claudeauth.ParseEnvelope(string(b))
+	if env, fileErr := readCredFile(t.CredsPath); fileErr == nil {
+		return env, nil
 	}
 	return nil, ErrNoCredential
+}
+
+// ReadCredCandidates reads Keychain and the fallback file independently. It is
+// used after invalid_grant to find a newer credential written by another live
+// Claude Code session. Invalid and duplicate candidates are omitted.
+func (t *Target) ReadCredCandidates() []CredentialCandidate {
+	var out []CredentialCandidate
+	seen := map[string]bool{}
+	add := func(env *claudeauth.Envelope, source string) {
+		if env == nil || env.OAuth == nil || seen[env.OAuth.AccessToken] {
+			return
+		}
+		seen[env.OAuth.AccessToken] = true
+		out = append(out, CredentialCandidate{Env: env, Source: source})
+	}
+
+	if raw, err := keychain.Get(t.Service, t.Account); err == nil {
+		if env, err := claudeauth.ParseEnvelope(raw); err == nil {
+			add(env, "Keychain")
+		}
+	}
+	if env, err := readCredFile(t.CredsPath); err == nil {
+		add(env, t.CredsPath)
+	}
+	return out
+}
+
+func readCredFile(path string) (*claudeauth.Envelope, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return claudeauth.ParseEnvelope(string(b))
 }
 
 // WriteCred makes env the credential Claude Code will use. The keychain is
