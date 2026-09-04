@@ -101,6 +101,9 @@ func (t *Target) ReadCred() (*claudeauth.Envelope, error) {
 			return env, nil
 		}
 		if env, fileErr := readCredFile(t.CredsPath); fileErr == nil {
+			if repairErr := t.writeKeychainCred(env); repairErr != nil {
+				return nil, fmt.Errorf("repair the live Keychain credential from %s: %w", t.CredsPath, repairErr)
+			}
 			return env, nil
 		}
 		return nil, parseErr
@@ -109,6 +112,9 @@ func (t *Target) ReadCred() (*claudeauth.Envelope, error) {
 		return nil, keyErr
 	}
 	if env, fileErr := readCredFile(t.CredsPath); fileErr == nil {
+		if repairErr := t.writeKeychainCred(env); repairErr != nil {
+			return nil, fmt.Errorf("restore the live Keychain credential from %s: %w", t.CredsPath, repairErr)
+		}
 		return env, nil
 	}
 	return nil, ErrNoCredential
@@ -151,11 +157,11 @@ func readCredFile(path string) (*claudeauth.Envelope, error) {
 // authoritative; the fallback file is only updated when it already exists, so
 // cas never introduces a plaintext copy that was not already there.
 func (t *Target) WriteCred(env *claudeauth.Envelope) error {
-	blob, err := env.Encode()
-	if err != nil {
+	if err := t.writeKeychainCred(env); err != nil {
 		return err
 	}
-	if err := keychain.Set(t.Service, t.Account, t.Service, blob); err != nil {
+	blob, err := env.Encode()
+	if err != nil {
 		return err
 	}
 	if _, err := os.Stat(t.CredsPath); err == nil {
@@ -164,6 +170,14 @@ func (t *Target) WriteCred(env *claudeauth.Envelope) error {
 		}
 	}
 	return nil
+}
+
+func (t *Target) writeKeychainCred(env *claudeauth.Envelope) error {
+	blob, err := env.Encode()
+	if err != nil {
+		return err
+	}
+	return keychain.Set(t.Service, t.Account, t.Service, blob)
 }
 
 // ReadOAuthAccount returns the oauthAccount block of ~/.claude.json, or nil if
