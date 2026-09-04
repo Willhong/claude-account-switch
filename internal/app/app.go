@@ -209,6 +209,7 @@ func (a *App) adoptLiveInto(s *store.Slot, live *claudeauth.Envelope, rawAccount
 	if err == nil && stored.OAuth.AccessToken == live.OAuth.AccessToken {
 		return false
 	}
+	live = preserveRefreshExpiry(s, live)
 	if err := a.Store.WriteCred(s.N, s.Label, live); err != nil {
 		ui.Warnf("could not sync slot %d from the live credential: %v", s.N, err)
 		return false
@@ -375,9 +376,20 @@ func (a *App) recoverLiveCredential(ctx context.Context, s *store.Slot, rejected
 		if s.AccountUUID == "" || validation.AccountUUID != s.AccountUUID {
 			continue
 		}
-		return candidate.Env.Clone()
+		return preserveRefreshExpiry(s, candidate.Env)
 	}
 	return nil
+}
+
+// preserveRefreshExpiry carries forward a known deadline when Claude Code's
+// persisted credential contains a refresh token but omits its expiry.
+func preserveRefreshExpiry(s *store.Slot, env *claudeauth.Envelope) *claudeauth.Envelope {
+	if env == nil || env.OAuth == nil || env.OAuth.RefreshTokenExpiresAt != 0 || s.RefreshTokenExpiresAt == 0 {
+		return env
+	}
+	next := env.Clone()
+	next.OAuth.RefreshTokenExpiresAt = s.RefreshTokenExpiresAt
+	return next
 }
 
 // applyProfile folds a freshly fetched profile into a slot and its credential.

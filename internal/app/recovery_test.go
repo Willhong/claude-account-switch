@@ -41,7 +41,8 @@ func TestRecoverLiveCredentialAcceptsValidatedCredentialForSameAccount(t *testin
 		},
 		OAuth: claudeauth.Config{APIBase: server.URL, HTTP: server.Client()},
 	}
-	slot := &store.Slot{N: 2, AccountUUID: accountUUID}
+	const knownRefreshExpiry = int64(1790895899971)
+	slot := &store.Slot{N: 2, AccountUUID: accountUUID, RefreshTokenExpiresAt: knownRefreshExpiry}
 
 	recovered := a.recoverLiveCredential(context.Background(), slot, "old-refresh")
 	if recovered == nil {
@@ -49,6 +50,9 @@ func TestRecoverLiveCredentialAcceptsValidatedCredentialForSameAccount(t *testin
 	}
 	if recovered.OAuth.RefreshToken != "new-refresh" {
 		t.Fatalf("refresh token = %q, want the newer credential", recovered.OAuth.RefreshToken)
+	}
+	if recovered.OAuth.RefreshTokenExpiresAt != knownRefreshExpiry {
+		t.Fatalf("refresh expiry = %d, want preserved value %d", recovered.OAuth.RefreshTokenExpiresAt, knownRefreshExpiry)
 	}
 }
 

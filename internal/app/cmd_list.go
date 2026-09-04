@@ -61,13 +61,17 @@ func CmdList(args []string) error {
 		if s.N == a.State.ActiveSlot {
 			marker = ui.Green("*")
 		}
+		refreshPresent := false
+		if env, err := a.Store.ReadCred(s.N); err == nil {
+			refreshPresent = env.OAuth.RefreshToken != ""
+		}
 		t.Rows = append(t.Rows, []string{
 			marker,
 			fmt.Sprintf("%d", s.N),
 			s.Email,
 			planLabel(s),
 			accessCell(s),
-			refreshCell(s),
+			refreshCell(s, refreshPresent),
 			s.Label,
 		})
 	}
@@ -112,10 +116,12 @@ func accessCell(s *store.Slot) string {
 	}
 }
 
-func refreshCell(s *store.Slot) string {
+func refreshCell(s *store.Slot, present bool) string {
 	t := s.RefreshExpiresAt()
 	text := ui.RelativeTime(t)
 	switch {
+	case t.IsZero() && present:
+		return ui.Dim("present (expiry unknown)")
 	case t.IsZero():
 		return ui.Dim(text)
 	case time.Until(t) <= 0:

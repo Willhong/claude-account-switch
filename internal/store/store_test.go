@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/Willhong/claude-account-switch/internal/claudeauth"
 )
 
 func newStore(t *testing.T) *Store {
@@ -116,6 +118,27 @@ func TestRoundTripKeepsTheOAuthAccountBlock(t *testing.T) {
 	}
 	if AccountEmailOf(t, got.OAuthAccount) != "a@example.com" {
 		t.Errorf("oauthAccount was mangled: %s", got.OAuthAccount)
+	}
+}
+
+func TestApplyCredPreservesKnownRefreshExpiryWhenClaudeOmitsIt(t *testing.T) {
+	const knownExpiry = int64(1790895899971)
+	slot := &Slot{RefreshTokenExpiresAt: knownExpiry}
+
+	slot.ApplyCred(&claudeauth.Cred{ExpiresAt: 123, RefreshToken: "rotated"})
+
+	if slot.RefreshTokenExpiresAt != knownExpiry {
+		t.Fatalf("refresh expiry = %d, want preserved value %d", slot.RefreshTokenExpiresAt, knownExpiry)
+	}
+}
+
+func TestApplyCredReplacesKnownRefreshExpiryWhenProvided(t *testing.T) {
+	slot := &Slot{RefreshTokenExpiresAt: 100}
+
+	slot.ApplyCred(&claudeauth.Cred{RefreshTokenExpiresAt: 200})
+
+	if slot.RefreshTokenExpiresAt != 200 {
+		t.Fatalf("refresh expiry = %d, want 200", slot.RefreshTokenExpiresAt)
 	}
 }
 

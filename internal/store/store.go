@@ -77,7 +77,12 @@ func millis(ms int64) time.Time {
 // ApplyCred copies the parts of a credential that belong in the slot metadata.
 func (s *Slot) ApplyCred(c *claudeauth.Cred) {
 	s.ExpiresAt = c.ExpiresAt
-	s.RefreshTokenExpiresAt = c.RefreshTokenExpiresAt
+	// Claude Code sometimes omits the refresh-token expiry when it persists a
+	// rotated credential. Keep the last known deadline instead of turning a
+	// known expiry into "unknown".
+	if c.RefreshTokenExpiresAt != 0 {
+		s.RefreshTokenExpiresAt = c.RefreshTokenExpiresAt
+	}
 	if len(c.Scopes) > 0 {
 		s.Scopes = c.Scopes
 	}
