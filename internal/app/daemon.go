@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/Willhong/claude-account-switch/internal/store"
 	"github.com/Willhong/claude-account-switch/internal/ui"
@@ -20,6 +22,31 @@ const LaunchdLabel = "com.github.hong-kyungtack.cas.refresh"
 // defaultInterval is how often the agent rotates tokens. Access tokens last
 // hours, so half-hourly keeps every slot warm without being chatty.
 const defaultInterval = 1800
+
+// Reap modes for the background agent.
+const (
+	// ReapOff is the default: the agent refreshes tokens and touches nothing else.
+	ReapOff = "off"
+	// ReapStale closes idle sessions that predate the last account switch —
+	// the ones actually holding the wrong credential.
+	ReapStale = "stale"
+	// ReapIdleMode closes every idle session, whichever account it holds.
+	ReapIdleMode = "idle"
+)
+
+// minDaemonReapIdle is the shortest idle window the agent will act on. Nothing
+// asks before the agent closes a session, so a threshold low enough to catch
+// someone mid-thought is a footgun rather than a setting.
+const minDaemonReapIdle = 15 * time.Minute
+
+func validReapMode(mode string) error {
+	switch mode {
+	case ReapOff, ReapStale, ReapIdleMode:
+		return nil
+	default:
+		return fmt.Errorf("unknown --reap mode %q (want %s, %s or %s)", mode, ReapOff, ReapStale, ReapIdleMode)
+	}
+}
 
 // CmdDaemon manages the launchd agent that keeps parked accounts refreshed.
 func CmdDaemon(args []string) error {
@@ -35,8 +62,7 @@ func CmdDaemon(args []string) error {
 	case "status":
 		return daemonStatus()
 	case "run":
-		ui.SetTimestamps(true)
-		return CmdRefresh(append([]string{"-quiet"}, rest...))
+		return daemonRun(rest)
 	case "log":
 		return daemonLog()
 	default:
@@ -55,11 +81,19 @@ func plistPath() (string, error) {
 func daemonInstall(args []string) error {
 	fs := flag.NewFlagSet("cas daemon install", flag.ContinueOnError)
 	interval := fs.Int("interval", defaultInterval, "seconds between refresh runs")
+	reap := fs.String("reap", ReapOff, "also close idle sessions each run: off, stale or idle")
+	reapIdle := fs.Duration("reap-idle", ReapIdle(), "how long untouched a session must be for the agent to close it")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	if *interval < 60 {
 		return errors.New("--interval must be at least 60 seconds")
+	}
+	if err := validReapMode(*reap); err != nil {
+		return err
+	}
+	if *reap != ReapOff && *reapIdle < minDaemonReapIdle {
+		return fmt.Errorf("--reap-idle must be at least %s for the background agent, which closes sessions without asking", ui.Duration(minDaemonReapIdle))
 	}
 
 	exe, err := os.Executable()
@@ -103,6 +137,16 @@ func daemonInstall(args []string) error {
 			strings.Join(envEntries, "\n") + "\n    </dict>\n"
 	}
 
+	// The agent re-runs this binary, so the reap settings ride along as flags.
+	progArgs := []string{exe, "daemon", "run"}
+	if *reap != ReapOff {
+		progArgs = append(progArgs, "-reap", *reap, "-reap-idle", reapIdle.String())
+	}
+	var argBlock strings.Builder
+	for _, arg := range progArgs {
+		fmt.Fprintf(&argBlock, "      <string>%s</string>\n", escapeXML(arg))
+	}
+
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -111,10 +155,7 @@ func daemonInstall(args []string) error {
     <string>%s</string>
     <key>ProgramArguments</key>
     <array>
-      <string>%s</string>
-      <string>daemon</string>
-      <string>run</string>
-    </array>
+%s    </array>
     <key>StartInterval</key>
     <integer>%d</integer>
     <key>RunAtLoad</key>
@@ -127,7 +168,7 @@ func daemonInstall(args []string) error {
     <string>%s</string>
   </dict>
 </plist>
-`, LaunchdLabel, escapeXML(exe), *interval, envBlock, escapeXML(logPath), escapeXML(logPath))
+`, LaunchdLabel, argBlock.String(), *interval, envBlock, escapeXML(logPath), escapeXML(logPath))
 
 	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
@@ -143,6 +184,84 @@ func daemonInstall(args []string) error {
 
 	ui.OKf("Installed the refresh agent (every %s).", ui.Duration(secs(*interval)))
 	fmt.Fprintf(os.Stderr, "  plist  %s\n  log    %s\n", path, logPath)
+	switch *reap {
+	case ReapStale:
+		fmt.Fprintf(os.Stderr, "  reap   sessions idle for %s that predate the last switch\n", ui.Duration(*reapIdle))
+	case ReapIdleMode:
+		fmt.Fprintf(os.Stderr, "  reap   every session idle for %s\n", ui.Duration(*reapIdle))
+	default:
+		fmt.Fprintf(os.Stderr, "  reap   %s — run `cas daemon install --reap stale` to close idle sessions too\n", ui.Dim("off"))
+	}
+	return nil
+}
+
+// daemonRun is what launchd executes: refresh every slot that needs it, and,
+// when the agent was installed with --reap, close the idle sessions that would
+// otherwise rotate a credential behind cas's back.
+func daemonRun(args []string) error {
+	fs := flag.NewFlagSet("cas daemon run", flag.ContinueOnError)
+	reap := fs.String("reap", ReapOff, "close idle sessions before refreshing: off, stale or idle")
+	reapIdle := fs.Duration("reap-idle", ReapIdle(), "how long untouched a session must be to be closed")
+	if err := parseNoArgs(fs, args); err != nil {
+		return err
+	}
+	if err := validReapMode(*reap); err != nil {
+		return err
+	}
+	ui.SetTimestamps(true)
+
+	// Reaping comes first, and in its own store lock: closing a session that
+	// holds a superseded credential before rotating anything means it cannot
+	// race the refresh and write its own token back afterwards.
+	if err := daemonReap(*reap, *reapIdle); err != nil {
+		// A reap failure must not cost the run its refresh.
+		ui.Errorf("reap: %v", err)
+	}
+	return CmdRefresh([]string{"-quiet"})
+}
+
+// daemonReap closes idle sessions unattended. It never escalates to SIGKILL
+// and never acts on a session whose idle time could not be measured.
+func daemonReap(mode string, idle time.Duration) error {
+	if mode == ReapOff {
+		return nil
+	}
+	if idle < minDaemonReapIdle {
+		return fmt.Errorf("refusing to reap on a %s idle window; %s is the minimum", ui.Duration(idle), ui.Duration(minDaemonReapIdle))
+	}
+
+	a, err := New()
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+
+	found, err := a.sessions()
+	if err != nil {
+		return err
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	if mode == ReapStale && a.State.SwitchedAt.IsZero() {
+		ui.Infof("reap: no account switch recorded yet, so no session can be judged stale; nothing closed")
+		return nil
+	}
+
+	doomed := selectForReap(found, reapCriteria{Idle: idle, StaleOnly: mode == ReapStale})
+	if len(doomed) == 0 {
+		return nil
+	}
+
+	closed, survivors := closeSessions(doomed, syscall.SIGTERM)
+	for _, s := range closed {
+		ui.OKf("reap: closed pid %d (idle %s, up %s, %s)", s.PID, ui.Duration(s.Idle), ui.Duration(s.Uptime), shortenHome(s.CWD))
+	}
+	// launchd runs again shortly; a session that ignored SIGTERM is left for a
+	// person to look at rather than killed outright.
+	for _, s := range survivors {
+		ui.Warnf("reap: pid %d did not exit on SIGTERM; leaving it running", s.PID)
+	}
 	return nil
 }
 
@@ -175,10 +294,12 @@ func daemonStatus() error {
 		fmt.Sprintf("gui/%d/%s", os.Getuid(), LaunchdLabel)).CombinedOutput()
 	if err != nil {
 		fmt.Printf("installed but not loaded (%s)\n", path)
+		fmt.Printf("  reap = %s\n", installedReapMode(path))
 		return nil
 	}
 
 	fmt.Printf("%s  %s\n", ui.Green("loaded"), path)
+	fmt.Printf("  reap = %s\n", installedReapMode(path))
 	// launchctl print repeats some keys for nested sections; report the first.
 	seen := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -199,6 +320,57 @@ func daemonStatus() error {
 		}
 	}
 	return nil
+}
+
+// installedReapMode reports the reap settings baked into an installed plist,
+// so `cas daemon status` says what the agent will actually do rather than what
+// the current defaults would do.
+func installedReapMode(plistPath string) string {
+	b, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "unknown"
+	}
+	args := plistProgramArguments(string(b))
+	mode, idle := ReapOff, ""
+	for i, a := range args {
+		if i+1 >= len(args) {
+			break
+		}
+		switch a {
+		case "-reap", "--reap":
+			mode = args[i+1]
+		case "-reap-idle", "--reap-idle":
+			idle = args[i+1]
+		}
+	}
+	if mode == ReapOff {
+		return ui.Dim("off")
+	}
+	if d, err := time.ParseDuration(idle); err == nil {
+		return fmt.Sprintf("%s (idle %s)", mode, ui.Duration(d))
+	}
+	return mode
+}
+
+// plistProgramArguments pulls the <string> values out of the ProgramArguments
+// array. cas writes this file itself, so a tolerant scan beats a plist parser.
+func plistProgramArguments(plist string) []string {
+	start := strings.Index(plist, "<key>ProgramArguments</key>")
+	if start < 0 {
+		return nil
+	}
+	rest := plist[start:]
+	end := strings.Index(rest, "</array>")
+	if end < 0 {
+		return nil
+	}
+	var args []string
+	for _, chunk := range strings.Split(rest[:end], "<string>")[1:] {
+		if i := strings.Index(chunk, "</string>"); i >= 0 {
+			args = append(args, chunk[:i])
+		}
+	}
+	return args
 }
 
 func daemonLog() error {

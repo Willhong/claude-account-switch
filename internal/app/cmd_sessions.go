@@ -162,30 +162,17 @@ func CmdReap(args []string) error {
 		return err
 	}
 
-	var doomed []*liveSession
 	for _, s := range found {
-		if s.Ours {
-			if explicit[s.PID] {
-				return fmt.Errorf("pid %d is the session cas is running inside; refusing to close it", s.PID)
-			}
-			continue
+		if s.Ours && explicit[s.PID] {
+			return fmt.Errorf("pid %d is the session cas is running inside; refusing to close it", s.PID)
 		}
-		if len(explicit) > 0 {
-			if explicit[s.PID] {
-				doomed = append(doomed, s)
-			}
-			continue
-		}
-		// --all drops the idle requirement; --stale narrows what is left to the
-		// sessions that are actually holding the wrong account.
-		if !*all && !(s.IdleKnown && s.Idle >= *idle) {
-			continue
-		}
-		if *stale && !s.Stale {
-			continue
-		}
-		doomed = append(doomed, s)
 	}
+	doomed := selectForReap(found, reapCriteria{
+		Idle:       *idle,
+		IgnoreIdle: *all,
+		StaleOnly:  *stale,
+		PIDs:       explicit,
+	})
 
 	if len(explicit) > 0 {
 		for pid := range explicit {
@@ -238,7 +225,61 @@ func CmdReap(args []string) error {
 	if *force {
 		sig = syscall.SIGKILL
 	}
-	var survivors []*liveSession
+	closed, survivors := closeSessions(doomed, sig)
+	for _, s := range closed {
+		ui.OKf("Closed pid %d%s.", s.PID, whereClosed(s))
+	}
+	for _, s := range survivors {
+		ui.Warnf("pid %d is still running; re-run with --force to send SIGKILL.", s.PID)
+	}
+	if len(closed) > 0 {
+		ui.Infof("The switched-in credential is now the only one in play.")
+	}
+	return nil
+}
+
+// reapCriteria describes which running sessions should be closed.
+type reapCriteria struct {
+	// Idle is how long a session must have gone untouched to qualify. A
+	// session whose idle time could not be measured never qualifies.
+	Idle time.Duration
+	// IgnoreIdle considers every session regardless of how recently it was used.
+	IgnoreIdle bool
+	// StaleOnly narrows the selection to sessions that predate the last switch.
+	StaleOnly bool
+	// PIDs, when non-empty, selects exactly these processes and nothing else.
+	PIDs map[int]bool
+}
+
+// selectForReap applies the criteria. A session cas is running inside, or one
+// sharing its terminal, is never selected — not by --all, and not by pid.
+func selectForReap(found []*liveSession, c reapCriteria) []*liveSession {
+	var doomed []*liveSession
+	for _, s := range found {
+		if s.Ours {
+			continue
+		}
+		if len(c.PIDs) > 0 {
+			if c.PIDs[s.PID] {
+				doomed = append(doomed, s)
+			}
+			continue
+		}
+		if !c.IgnoreIdle && !(s.IdleKnown && s.Idle >= c.Idle) {
+			continue
+		}
+		if c.StaleOnly && !s.Stale {
+			continue
+		}
+		doomed = append(doomed, s)
+	}
+	return doomed
+}
+
+// closeSessions signals each session and waits briefly for it to go. SIGTERM
+// lets Claude Code save its transcript on the way out, so a session that is
+// still alive after a few seconds is reported rather than escalated.
+func closeSessions(doomed []*liveSession, sig syscall.Signal) (closed, survivors []*liveSession) {
 	for _, s := range doomed {
 		if err := s.Signal(sig); err != nil {
 			ui.Warnf("could not signal pid %d: %v", s.PID, err)
@@ -247,8 +288,6 @@ func CmdReap(args []string) error {
 		survivors = append(survivors, s)
 	}
 
-	// SIGTERM lets Claude Code save its transcript on the way out, so give it a
-	// moment before reporting anything as stuck.
 	deadline := time.Now().Add(5 * time.Second)
 	for len(survivors) > 0 && time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
@@ -258,17 +297,11 @@ func CmdReap(args []string) error {
 				left = append(left, s)
 				continue
 			}
-			ui.OKf("Closed pid %d%s.", s.PID, whereClosed(s))
+			closed = append(closed, s)
 		}
 		survivors = left
 	}
-	for _, s := range survivors {
-		ui.Warnf("pid %d is still running; re-run with --force to send SIGKILL.", s.PID)
-	}
-	if len(survivors) < len(doomed) {
-		ui.Infof("The switched-in credential is now the only one in play.")
-	}
-	return nil
+	return closed, survivors
 }
 
 func summarise(found []*liveSession, idle time.Duration) {

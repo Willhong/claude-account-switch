@@ -59,7 +59,7 @@ cas daemon install      # keep every account's token refreshed in the background
 | `cas reap` | close the idle sessions that keep cycling the credential in the background |
 | `cas remove <n>` | forget a slot without touching the account |
 | `cas label <n> <name>` | give a slot a short name |
-| `cas daemon …` | `install`, `uninstall`, `status`, `log`, `run` |
+| `cas daemon …` | `install` (`--reap` to close idle sessions too), `uninstall`, `status`, `log`, `run` |
 | `cas doctor` | where cas reads and writes, and what looks wrong |
 
 `<n>` accepts a slot number, a label, or an email — `cas switch work` and
@@ -121,6 +121,38 @@ days. A parked account would go stale, so cas refreshes on two schedules:
   `~/.cas/daemon.log`. If your login Keychain is locked when it fires, the run
   fails and is logged; the next `cas` command picks the work back up.
 
+#### Reaping from the agent
+
+The agent can also close idle sessions each run, which is off unless you ask
+for it:
+
+```sh
+cas daemon install --reap stale               # idle sessions on the previous account
+cas daemon install --reap idle                # every idle session
+cas daemon install --reap stale --reap-idle 4h
+```
+
+`stale` is the mode worth having: it closes only the sessions that both sat
+idle past the threshold *and* started before the last account switch — exactly
+the ones that can undo it. `idle` closes any idle session, whichever account it
+holds. `cas daemon status` reports which mode is installed.
+
+Unattended reaping is deliberately more cautious than the interactive command,
+because nothing is there to answer a prompt and, running under launchd, the
+agent has no terminal or parent session of its own to recognise:
+
+- the idle threshold is the only protection left, so it must be at least 15
+  minutes — `--reap-idle 5m` is refused at install time;
+- a session whose idle time could not be measured is never closed, so a
+  detached session with no transcript is always left alone;
+- only `SIGTERM` is ever sent. A session that ignores it is logged and left
+  running rather than killed;
+- in `stale` mode, if cas has never recorded a switch there is nothing to judge
+  staleness against, so the run closes nothing and says so in the log.
+
+The reap happens before the refresh, so a session holding a superseded
+credential is gone before any token is rotated and cannot race the write.
+
 cas also watches for drift in the other direction. Claude Code rotates its own
 token, so the live credential is often newer than cas's copy; each command
 notices and folds it back into the active slot. If the live token turns out to
@@ -179,6 +211,8 @@ cas reap --force              # SIGKILL instead of SIGTERM
 Two sessions are never candidates, with or without `--all`: the one cas is
 running inside (found by walking cas's own parent chain, so `cas reap` is safe
 to run from inside Claude Code) and any session sharing this terminal.
+
+The background agent can do the same sweep on its own — see below.
 
 ### `cas clean`
 

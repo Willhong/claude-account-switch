@@ -39,7 +39,7 @@ var commands = []command{
 	{"label", []string{"rename"}, "give a slot a short name", app.CmdLabel},
 	{"sessions", []string{"ps"}, "list the running Claude Code sessions and how idle they are", app.CmdSessions},
 	{"reap", []string{"kill"}, "close idle sessions that keep cycling the credential", app.CmdReap},
-	{"daemon", nil, "manage the background refresh agent", app.CmdDaemon},
+	{"daemon", nil, "manage the background refresh and reap agent", app.CmdDaemon},
 	{"doctor", nil, "report where cas reads and writes, and what looks wrong", app.CmdDoctor},
 	{"version", nil, "print the cas version", app.CmdVersion},
 }
@@ -124,6 +124,8 @@ Getting started:
   cas daemon install     keep every account's token alive in the background
   cas sessions           see which Claude Code sessions are still running
   cas reap               close the idle ones before they undo a switch
+  cas daemon install --reap stale
+                         let the agent do that sweep every 30 minutes
 
 Run `+"`cas <command> -h`"+` for a command's flags.
 
