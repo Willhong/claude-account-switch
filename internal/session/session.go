@@ -66,6 +66,9 @@ type Options struct {
 	// ProjectsDir is Claude Code's transcript directory (~/.claude/projects).
 	// It supplies the idle signal for sessions with no terminal.
 	ProjectsDir string
+	// Match identifies the top-level agent processes to return. Nil keeps the
+	// historical Claude Code matcher.
+	Match func(args string) bool
 	// Now overrides the clock in tests.
 	Now func() time.Time
 }
@@ -103,8 +106,12 @@ func sessionsFrom(rows []procRow, self int, opts Options) []*Session {
 
 	var sessions []*Session
 	var pids []int
+	match := opts.Match
+	if match == nil {
+		match = isClaude
+	}
 	for _, r := range rows {
-		if !isClaude(r.args) {
+		if !match(r.args) {
 			continue
 		}
 		s := &Session{
@@ -127,6 +134,16 @@ func sessionsFrom(rows []procRow, self int, opts Options) []*Session {
 		s.Idle, s.IdleKnown = idleOf(s, opts.ProjectsDir, now)
 	}
 	return sessions
+}
+
+// IsCodex reports whether args belongs to the Codex executable itself. It also
+// matches app-server processes; callers classify and protect those separately.
+func IsCodex(args string) bool {
+	argv0 := args
+	if i := strings.IndexByte(args, ' '); i >= 0 {
+		argv0 = args[:i]
+	}
+	return filepath.Base(argv0) == "codex"
 }
 
 // idleOf measures how long a session has gone without activity.

@@ -19,6 +19,7 @@ install: build
 
 uninstall:
 	@$(PREFIX)/bin/$(BINARY) daemon uninstall 2>/dev/null || true
+	@$(PREFIX)/bin/$(BINARY) codex daemon uninstall 2>/dev/null || true
 	rm -f $(PREFIX)/bin/$(BINARY)
 
 test:

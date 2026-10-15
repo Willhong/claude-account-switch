@@ -1,7 +1,8 @@
-# cas — Claude Account Switch
+# cas — Claude & Codex Account Switch
 
-Switch between several Claude Code logins without signing in and out, and keep
-every parked account's token alive so a switch never lands on a dead session.
+Switch between several Claude Code or Codex CLI logins without repeatedly
+signing in and out. Claude and Codex accounts live in separate slot tables, so
+the existing Claude commands remain unchanged.
 
 ```
 $ cas list
@@ -11,10 +12,19 @@ $ cas list
 
 $ cas switch 2
 ✓ Switched to slot 2 — me@personal.com
+
+$ cas codex list
+   SLOT  ACCOUNT               PLAN  METHOD   ACCESS TOKEN  LABEL
+*  1     me@work.com           pro   chatgpt  in 7m 32s     work
+   2     me@personal.com       plus  chatgpt  in 4m 18s     personal
+
+$ cas codex switch personal
+✓ Switched Codex to slot 2 — me@personal.com
 ```
 
-macOS only: cas stores credentials in the login Keychain, exactly where Claude
-Code does.
+macOS only: cas stores parked credentials in the login Keychain. Claude Code's
+live credential stays in its Keychain item; Codex's live credential stays in
+`CODEX_HOME/auth.json`.
 
 > **Before you start.** Using several accounts to work around rate limits
 > conflicts with Anthropic's terms. cas is for people who legitimately hold
@@ -41,6 +51,26 @@ cas limit               # see how much quota each one has left
 cas daemon install      # keep every account's token refreshed in the background
 ```
 
+For Codex CLI:
+
+```sh
+cas codex adopt                         # register the login Codex already uses
+cas codex login --label personal        # sign in again and add another account
+cas codex list
+cas codex limit
+cas codex refresh
+cas codex switch work
+cas codex daemon install                # keep parked Codex logins refreshed
+```
+
+`cas codex login` saves an unregistered current login before Codex replaces it.
+API key and enterprise access-token login are also passed through:
+
+```sh
+printenv OPENAI_API_KEY | cas codex login --with-api-key --label api
+printenv CODEX_ACCESS_TOKEN | cas codex login --with-access-token --label work
+```
+
 `make uninstall` removes the binary and the background agent.
 
 ## Commands
@@ -61,12 +91,71 @@ cas daemon install      # keep every account's token refreshed in the background
 | `cas label <n> <name>` | give a slot a short name |
 | `cas daemon …` | `install` (`--reap` to close idle sessions too), `uninstall`, `status`, `log`, `run` |
 | `cas doctor` | where cas reads and writes, and what looks wrong |
+| `cas codex …` | manage a separate set of Codex CLI account slots |
 
 `<n>` accepts a slot number, a label, or an email — `cas switch work` and
 `cas switch me@personal.com` both work, as does any unambiguous substring.
 
 Flags may appear anywhere: `cas remove 2 --yes` and `cas remove --yes 2` are
 equivalent.
+
+### Codex commands
+
+| Command | What it does |
+| --- | --- |
+| `cas codex list` | every registered Codex account, login method and access-token expiry |
+| `cas codex login` | run the official Codex login flow and register its result |
+| `cas codex adopt` | register the account in `CODEX_HOME/auth.json` |
+| `cas codex switch <n>` | replace the live Codex credential with a stored slot |
+| `cas codex current` | show which Codex account is active |
+| `cas codex limit` | show current rate-limit usage and reset times for every slot |
+| `cas codex refresh` | refresh parked ChatGPT credentials near access-token expiry |
+| `cas codex clean` | remove only credentials proven dead or missing |
+| `cas codex sessions` | list standalone CLI, desktop app-server and BB provider processes |
+| `cas codex reap` | close idle standalone CLI sessions; managed app-servers are always protected |
+| `cas codex daemon …` | manage the separate Codex refresh/reap launchd agent |
+| `cas codex doctor` | diagnose credential storage, active account, slots, processes and daemon |
+| `cas codex remove <n>` | forget a slot without logging the live account out |
+| `cas codex label <n> <name>` | give a slot a short name |
+
+Codex support currently requires file-backed credentials. Set
+`cli_auth_credentials_store = "file"` in `~/.codex/config.toml` when your Codex
+installation is configured for Keychain-only or ephemeral storage. The active
+credential remains in `CODEX_HOME/auth.json`, exactly where Codex writes it;
+parked credentials are stored in macOS Keychain under `cas-codex-credentials`.
+See the [official Codex authentication documentation](https://developers.openai.com/codex/auth/)
+for the storage setting and supported login methods.
+
+Codex refreshes the active login during use. Each `cas codex` command copies a
+newly rotated live credential back into its slot. `cas codex refresh` starts an
+isolated local app-server for each parked ChatGPT credential and asks Codex to
+refresh it. The separate `cas codex daemon` can run that pass in the background.
+Restart Codex sessions that were already running when you switched because they
+still hold the previous account in memory.
+
+`cas codex limit` starts a short-lived local Codex app-server for each parked
+credential and reads the same rate-limit snapshot used by Codex `/status`. It
+does not switch the live account while checking the slots.
+
+BB sessions configured with `bb-account-pool` authenticate through BB's own
+provider and ignore `CODEX_HOME/auth.json`. `cas codex switch` therefore does
+not change an already running BB thread; switch that provider separately or
+start a standalone Codex process after changing the slot.
+
+`cas codex sessions` reports managed desktop and BB app-servers for visibility,
+but `cas codex reap` never signals them, even with `--all` or `--pid`. Only
+standalone Codex CLI processes can be selected. The unattended daemon also
+requires at least a 15-minute idle threshold and only sends `SIGTERM`.
+
+The Codex daemon is independent from the Claude daemon:
+
+```sh
+cas codex daemon install --interval 1800
+cas codex daemon install --reap stale --reap-idle 2h
+cas codex daemon status
+cas codex daemon log
+cas codex daemon uninstall
+```
 
 ## How it works
 
@@ -246,6 +335,10 @@ and an unreachable API is never treated as proof that an account is dead.
 | `CAS_KEYCHAIN_SERVICE` | the Claude Code Keychain item to target |
 | `CAS_KEYCHAIN_ACCOUNT` | the Keychain account name (default: your macOS username) |
 | `CLAUDE_CONFIG_DIR` | honoured exactly as Claude Code honours it |
+| `CODEX_HOME` | where Codex reads `auth.json` (default `~/.codex`) |
+| `CAS_CODEX_BIN` | exact Codex executable used by refresh and daemon runs |
+| `CAS_CODEX_REFRESH_THRESHOLD` | how close to expiry a parked Codex token is refreshed (default `45m`) |
+| `CAS_CODEX_REAP_IDLE` | how long a standalone Codex CLI session must be idle for reap (default `2h`) |
 | `NO_COLOR` | disable colour output |
 
 If you use `CLAUDE_CONFIG_DIR`, Claude Code appends a hash suffix to its

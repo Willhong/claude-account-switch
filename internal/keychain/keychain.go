@@ -47,29 +47,11 @@ func Get(service, account string) (string, error) {
 // Set creates or updates the item for service/account. label is the name shown
 // in Keychain Access; it defaults to the service name when empty.
 func Set(service, account, label, value string) error {
+	if err := SetStdinOnly(service, account, label, value); err == nil {
+		return nil
+	}
+
 	payload := hex.EncodeToString([]byte(value))
-
-	line := "add-generic-password -U -a " + quote(account) + " -s " + quote(service)
-	if label != "" {
-		line += " -l " + quote(label)
-	}
-	line += " -X " + quote(payload) + "\n"
-
-	if len(line) <= stdinLimit {
-		var stdout, stderr bytes.Buffer
-		cmd := exec.Command(securityBin, "-i")
-		cmd.Stdin = strings.NewReader(line)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		err := cmd.Run()
-		combined := stderr.String() + stdout.String()
-		if err == nil && !strings.Contains(combined, "error") {
-			return nil
-		}
-		// Fall through to argv on any trouble; the interactive mode is the
-		// optimisation, not the contract.
-	}
-
 	args := []string{"add-generic-password", "-U", "-a", account, "-s", service}
 	if label != "" {
 		args = append(args, "-l", label)
@@ -81,6 +63,37 @@ func Set(service, account, label, value string) error {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("keychain write %q: %s", service, firstLine(stderr.String()))
+	}
+	return nil
+}
+
+// SetStdinOnly creates or updates an item without ever putting value in argv.
+// It returns an error instead of falling back when the interactive security
+// command cannot safely carry the payload.
+func SetStdinOnly(service, account, label, value string) error {
+	if strings.ContainsAny(service+account+label, "\r\n") {
+		return errors.New("keychain service, account, and label must be single-line")
+	}
+	payload := hex.EncodeToString([]byte(value))
+
+	line := "add-generic-password -U -a " + quote(account) + " -s " + quote(service)
+	if label != "" {
+		line += " -l " + quote(label)
+	}
+	line += " -X " + quote(payload) + "\n"
+
+	if len(line) > stdinLimit {
+		return fmt.Errorf("keychain value is too large for stdin (%d-byte command)", len(line))
+	}
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(securityBin, "-i")
+	cmd.Stdin = strings.NewReader(line)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	combined := stderr.String() + stdout.String()
+	if err != nil || strings.Contains(combined, "error") {
+		return fmt.Errorf("keychain stdin write %q: %s", service, firstLine(combined))
 	}
 	return nil
 }

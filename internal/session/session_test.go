@@ -50,6 +50,21 @@ func TestIsClaude(t *testing.T) {
 	}
 }
 
+func TestIsCodexMatchesCLIAndAppServerButNotHelpers(t *testing.T) {
+	cases := map[string]bool{
+		"codex": true,
+		"/Users/me/.local/bin/codex app-server --stdio":                 true,
+		"/Applications/ChatGPT.app/Contents/Resources/codex app-server": true,
+		"node /usr/local/bin/codex-helper":                              false,
+		"/Applications/Codex.app/Contents/MacOS/Codex":                  false,
+	}
+	for args, want := range cases {
+		if got := IsCodex(args); got != want {
+			t.Errorf("IsCodex(%q) = %v, want %v", args, got, want)
+		}
+	}
+}
+
 func TestSessionsFromMarksOwnAncestry(t *testing.T) {
 	rows := parsePS(psFixture)
 	// pid 503 stands in for the cas process: its parent 502 is a claude session.

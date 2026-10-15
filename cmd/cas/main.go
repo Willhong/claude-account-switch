@@ -27,6 +27,7 @@ type command struct {
 }
 
 var commands = []command{
+	{"codex", nil, "manage and switch Codex CLI accounts", app.CmdCodex},
 	{"list", []string{"ls"}, "show every registered account and its token expiry", app.CmdList},
 	{"login", nil, "sign in to another account and register it in a new slot", app.CmdLogin},
 	{"adopt", []string{"import"}, "register the account Claude Code is already signed in as", app.CmdAdopt},
@@ -96,11 +97,10 @@ func contains(list []string, s string) bool {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintf(w, `cas — Claude Account Switch %s
+	fmt.Fprintf(w, `cas — Claude & Codex Account Switch %s
 
-Switch between several Claude Code logins without signing in and out.
-Every registered account's token is kept refreshed in the background, so a
-switch never lands on a dead session.
+Switch between several Claude Code or Codex CLI logins without signing in and
+out. Top-level account commands manage Claude; `+"`cas codex`"+` manages Codex.
 
 Usage:
   cas <command> [flags]
@@ -116,6 +116,8 @@ Commands:
 	}
 	fmt.Fprintf(w, `
 Getting started:
+  cas codex adopt        register the Codex CLI login you already have
+  cas codex login        add another Codex account
   cas adopt              register the login you already have
   cas login              add a second account
   cas list               see both, with their token expiries
@@ -135,5 +137,10 @@ Environment:
   CAS_REAP_IDLE          how long untouched a session must be to be reaped (default 2h)
   CAS_KEYCHAIN_SERVICE   the Claude Code keychain item to target
   CLAUDE_CONFIG_DIR      honoured exactly as Claude Code honours it
+  CODEX_HOME             where Codex reads auth.json (default ~/.codex)
+  CAS_CODEX_BIN          exact Codex executable for refresh and daemon runs
+  CAS_CODEX_REFRESH_THRESHOLD
+                         how close to expiry a parked Codex token is refreshed
+  CAS_CODEX_REAP_IDLE    idle threshold for standalone Codex CLI sessions
 `)
 }
